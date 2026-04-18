@@ -194,10 +194,14 @@ export class ClaudianService implements ChatRuntime {
   // Compatibility: some older Claude CLI builds do not support --allow-dangerously-skip-permissions.
   private disableAllowDangerouslySkipPermissionsFlag = false;
 
+  // Compatibility: some older Claude CLI builds do not support --include-partial-messages.
+  private disableIncludePartialMessagesFlag = false;
+
   private cliFlagSupportCache: {
     key: string;
     supportsSettingSources: boolean;
     supportsAllowDangerouslySkipPermissions: boolean;
+    supportsIncludePartialMessages: boolean;
   } | null = null;
   private cliHelpProbeInFlight: Promise<void> | null = null;
 
@@ -290,6 +294,11 @@ export class ClaudianService implements ChatRuntime {
       // Remove the SDK option so it doesn't serialize to --allow-dangerously-skip-permissions.
       delete (options as any).allowDangerouslySkipPermissions;
     }
+
+    if (this.disableIncludePartialMessagesFlag) {
+      // Remove the SDK option so it doesn't serialize to --include-partial-messages.
+      delete (options as any).includePartialMessages;
+    }
   }
 
   private isUnsupportedSettingSourcesError(error: unknown, capturedStderr: string): boolean {
@@ -304,6 +313,7 @@ export class ClaudianService implements ChatRuntime {
     if (process.env.JEST_WORKER_ID) {
       this.disableSettingSourcesFlag = false;
       this.disableAllowDangerouslySkipPermissionsFlag = false;
+      this.disableIncludePartialMessagesFlag = false;
       return;
     }
 
@@ -311,6 +321,7 @@ export class ClaudianService implements ChatRuntime {
     if (this.cliFlagSupportCache?.key === key) {
       this.disableSettingSourcesFlag = !this.cliFlagSupportCache.supportsSettingSources;
       this.disableAllowDangerouslySkipPermissionsFlag = !this.cliFlagSupportCache.supportsAllowDangerouslySkipPermissions;
+      this.disableIncludePartialMessagesFlag = !this.cliFlagSupportCache.supportsIncludePartialMessages;
       return;
     }
 
@@ -319,6 +330,7 @@ export class ClaudianService implements ChatRuntime {
         // Default to "unsupported" if probe fails to avoid hard-crashing on unknown flags.
         let supportsSettingSources = false;
         let supportsAllowDangerouslySkipPermissions = false;
+        let supportsIncludePartialMessages = false;
         try {
           const child = spawn(cliPath, ['--help'], {
             env: {
@@ -358,18 +370,22 @@ export class ClaudianService implements ChatRuntime {
 
           supportsSettingSources = /--setting-sources\b/i.test(output);
           supportsAllowDangerouslySkipPermissions = /--allow-dangerously-skip-permissions\b/i.test(output);
+          supportsIncludePartialMessages = /--include-partial-messages\b/i.test(output);
         } catch {
           supportsSettingSources = false;
           supportsAllowDangerouslySkipPermissions = false;
+          supportsIncludePartialMessages = false;
         }
 
         this.cliFlagSupportCache = {
           key,
           supportsSettingSources,
           supportsAllowDangerouslySkipPermissions,
+          supportsIncludePartialMessages,
         };
         this.disableSettingSourcesFlag = !supportsSettingSources;
         this.disableAllowDangerouslySkipPermissionsFlag = !supportsAllowDangerouslySkipPermissions;
+        this.disableIncludePartialMessagesFlag = !supportsIncludePartialMessages;
       })().finally(() => {
         this.cliHelpProbeInFlight = null;
       });
@@ -973,6 +989,10 @@ export class ClaudianService implements ChatRuntime {
             // Auto-downgrade for older Claude CLI that doesn't support --allow-dangerously-skip-permissions.
             if (!this.disableAllowDangerouslySkipPermissionsFlag && /--allow-dangerously-skip-permissions/i.test(this.claudeCliStderr)) {
               this.disableAllowDangerouslySkipPermissionsFlag = true;
+            }
+            // Auto-downgrade for older Claude CLI that doesn't support --include-partial-messages.
+            if (!this.disableIncludePartialMessagesFlag && /--include-partial-messages/i.test(this.claudeCliStderr)) {
+              this.disableIncludePartialMessagesFlag = true;
             }
             await this.ensureReady({ force: true, preserveHandlers: true });
             if (!this.messageChannel) {
@@ -1861,6 +1881,11 @@ export class ClaudianService implements ChatRuntime {
           }
           if (mentionsSkipPermissions && !this.disableAllowDangerouslySkipPermissionsFlag) {
             this.disableAllowDangerouslySkipPermissionsFlag = true;
+            this.clearClaudeCliDiagnostics();
+            continue;
+          }
+          if (/--include-partial-messages/i.test(formatted) && !this.disableIncludePartialMessagesFlag) {
+            this.disableIncludePartialMessagesFlag = true;
             this.clearClaudeCliDiagnostics();
             continue;
           }
