@@ -22,6 +22,7 @@ import type {
   SlashCommand as SDKSlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import { query as agentQuery } from '@anthropic-ai/claude-agent-sdk';
+import { spawn } from 'child_process';
 import { Notice } from 'obsidian';
 
 import type { McpServerManager } from '../../../core/mcp/McpServerManager';
@@ -186,6 +187,13 @@ export class ClaudianService implements ChatRuntime {
   private claudeCliStderr = '';
   private readonly claudeCliStderrMaxChars = 8000;
 
+  // Compatibility: some older Claude CLI builds do not support --setting-sources.
+  // When detected, disable the flag and retry automatically.
+  private disableSettingSourcesFlag = false;
+
+  private settingSourcesSupportCache: { key: string; supported: boolean } | null = null;
+  private settingSourcesProbeInFlight: Promise<boolean> | null = null;
+
   private getLegacyPluginDeps(): ClaudianPlugin & {
     agentManager?: Pick<AppAgentManager, 'setBuiltinAgentNames'>;
     pluginManager?: AppPluginManager;
@@ -262,6 +270,91 @@ export class ClaudianService implements ChatRuntime {
 
   private clearClaudeCliDiagnostics(): void {
     this.claudeCliStderr = '';
+  }
+
+  private applyClaudeCliCompatibility(options: Options): void {
+    if (this.disableSettingSourcesFlag) {
+      // Remove the SDK option so it doesn't serialize to --setting-sources.
+      // (Older CLI errors with: unknown option '--setting-sources=...')
+      delete (options as any).settingSources;
+    }
+  }
+
+  private isUnsupportedSettingSourcesError(error: unknown, capturedStderr: string): boolean {
+    const msg = error instanceof Error ? (error.message || '') : '';
+    const stderr = capturedStderr || '';
+    // Be permissive: some CLIs print different prefixes but always include the flag.
+    return /--setting-sources/i.test(stderr) || /--setting-sources/i.test(msg);
+  }
+
+  private async ensureSettingSourcesCompatibility(cliPath: string, enhancedPath: string): Promise<void> {
+    // Unit tests run under Jest and should not spawn real binaries.
+    if (process.env.JEST_WORKER_ID) {
+      this.disableSettingSourcesFlag = false;
+      return;
+    }
+
+    const key = `${cliPath}|${enhancedPath}`;
+    if (this.settingSourcesSupportCache?.key === key) {
+      this.disableSettingSourcesFlag = !this.settingSourcesSupportCache.supported;
+      return;
+    }
+
+    if (!this.settingSourcesProbeInFlight) {
+      this.settingSourcesProbeInFlight = (async () => {
+        // Default to "unsupported" if probe fails to avoid hard-crashing on unknown flags.
+        let supported = false;
+        try {
+          const child = spawn(cliPath, ['--help'], {
+            env: {
+              ...process.env,
+              PATH: enhancedPath,
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+          });
+
+          const chunks: string[] = [];
+          const onData = (buf: unknown) => {
+            try {
+              if (typeof buf === 'string') chunks.push(buf);
+              else if (buf && typeof (buf as any).toString === 'function') chunks.push((buf as any).toString('utf-8'));
+            } catch {
+              // ignore
+            }
+          };
+          child.stdout?.on('data', onData);
+          child.stderr?.on('data', onData);
+
+          const output = await new Promise<string>((resolve) => {
+            const timeout = setTimeout(() => {
+              try { child.kill(); } catch { /* ignore */ }
+              resolve(chunks.join(''));
+            }, 2000);
+            child.once('close', () => {
+              clearTimeout(timeout);
+              resolve(chunks.join(''));
+            });
+            child.once('error', () => {
+              clearTimeout(timeout);
+              resolve(chunks.join(''));
+            });
+          });
+
+          supported = /--setting-sources\b/i.test(output);
+        } catch {
+          supported = false;
+        }
+
+        this.settingSourcesSupportCache = { key, supported };
+        this.disableSettingSourcesFlag = !supported;
+        return supported;
+      })().finally(() => {
+        this.settingSourcesProbeInFlight = null;
+      });
+    }
+
+    await this.settingSourcesProbeInFlight;
   }
 
   private appendClaudeCliStderr(data: string): void {
@@ -764,14 +857,15 @@ export class ClaudianService implements ChatRuntime {
   /**
    * Builds SDK options for the persistent query.
    */
-  private buildPersistentQueryOptions(
+  private async buildPersistentQueryOptions(
     vaultPath: string,
     cliPath: string,
     resumeSessionId?: string,
     resumeAtMessageId?: string,
     externalContextPaths?: string[]
-  ): Options {
+  ): Promise<Options> {
     const baseContext = this.buildQueryOptionsContext(vaultPath, cliPath);
+    await this.ensureSettingSourcesCompatibility(cliPath, baseContext.enhancedPath);
     const hooks = this.buildHooks();
 
     const ctx: PersistentQueryContext = {
@@ -791,6 +885,7 @@ export class ClaudianService implements ChatRuntime {
     options.spawnClaudeCodeProcess = createCustomSpawnFunction(baseContext.enhancedPath, (data) => {
       this.appendClaudeCliStderr(data);
     });
+    this.applyClaudeCliCompatibility(options);
     this.attachClaudeCliDiagnostics(options);
     return options;
   }
@@ -847,15 +942,19 @@ export class ClaudianService implements ChatRuntime {
           const errorInstance = error instanceof Error ? error : new Error(String(error));
           const messageToReplay = this.lastSentMessage;
 
-          if (!this.crashRecoveryAttempted && messageToReplay && handler && !handler.sawAnyChunk) {
-            this.crashRecoveryAttempted = true;
-            try {
-              await this.ensureReady({ force: true, preserveHandlers: true });
-              if (!this.messageChannel) {
-                throw new Error('Persistent query restart did not create message channel', {
-                  cause: error,
-                });
-              }
+        if (!this.crashRecoveryAttempted && messageToReplay && handler && !handler.sawAnyChunk) {
+          this.crashRecoveryAttempted = true;
+          try {
+            // Auto-downgrade for older Claude CLI that doesn't support --setting-sources.
+            if (!this.disableSettingSourcesFlag && this.isUnsupportedSettingSourcesError(errorInstance, this.claudeCliStderr)) {
+              this.disableSettingSourcesFlag = true;
+            }
+            await this.ensureReady({ force: true, preserveHandlers: true });
+            if (!this.messageChannel) {
+              throw new Error('Persistent query restart did not create message channel', {
+                cause: error,
+              });
+            }
               await this.applyDynamicUpdates(this.lastSentQueryOptions ?? undefined, { preserveHandlers: true });
               this.messageChannel.enqueue(messageToReplay);
               return;
@@ -1615,6 +1714,7 @@ export class ClaudianService implements ChatRuntime {
 
     const queryPrompt = this.buildPromptWithImages(prompt, images);
     const baseContext = this.buildQueryOptionsContext(cwd, cliPath);
+    await this.ensureSettingSourcesCompatibility(cliPath, baseContext.enhancedPath);
     const externalContextPaths = queryOptions?.externalContextPaths || [];
     const hooks = this.buildHooks();
     const hasEditorContext = prompt.includes('<editor_selection');
@@ -1639,82 +1739,105 @@ export class ClaudianService implements ChatRuntime {
       externalContextPaths,
     };
 
-    const options = QueryOptionsBuilder.buildColdStartQueryOptions(ctx);
-    // Always capture stderr directly from the spawned process so failures are
-    // actionable even when the SDK doesn't surface stderr on the thrown error.
-    options.spawnClaudeCodeProcess = createCustomSpawnFunction(baseContext.enhancedPath, (data) => {
-      this.appendClaudeCliStderr(data);
-    });
-    this.attachClaudeCliDiagnostics(options);
+    // Retry once for CLI compatibility issues.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const options = QueryOptionsBuilder.buildColdStartQueryOptions(ctx);
+      // Always capture stderr directly from the spawned process so failures are
+      // actionable even when the SDK doesn't surface stderr on the thrown error.
+      options.spawnClaudeCodeProcess = createCustomSpawnFunction(baseContext.enhancedPath, (data) => {
+        this.appendClaudeCliStderr(data);
+      });
+      this.applyClaudeCliCompatibility(options);
+      this.attachClaudeCliDiagnostics(options);
 
-    let sawStreamText = false;
-    let sawStreamThinking = false;
-    const streamState = createTransformStreamState();
-    try {
-      const response = agentQuery({ prompt: queryPrompt, options });
-      this.recordTurnMetadata({ wasSent: true });
-      let streamSessionId: string | null = this.sessionManager.getSessionId();
+      let sawStreamText = false;
+      let sawStreamThinking = false;
+      let sawAnyMessage = false;
+      const streamState = createTransformStreamState();
 
-      for await (const message of response) {
-        if (this.abortController?.signal.aborted) {
-          await response.interrupt();
-          break;
-        }
+      try {
+        const response = agentQuery({ prompt: queryPrompt, options });
+        this.recordTurnMetadata({ wasSent: true });
+        let streamSessionId: string | null = this.sessionManager.getSessionId();
 
-        for (const event of transformSDKMessage(message, this.getTransformOptions(selectedModel, streamState))) {
-          this.noteVisibleStreamContent(message, event, {
-            onText: () => {
-              sawStreamText = true;
-            },
-            onThinking: () => {
-              sawStreamThinking = true;
-            },
-          });
+        for await (const message of response) {
+          sawAnyMessage = true;
+          if (this.abortController?.signal.aborted) {
+            await response.interrupt();
+            break;
+          }
 
-          if (isSessionInitEvent(event)) {
-            this.sessionManager.captureSession(event.sessionId);
-            streamSessionId = event.sessionId;
-          } else if (isContextWindowEvent(event)) {
-            const usageChunk = this.updateBufferedUsageContextWindow(event.contextWindow);
-            if (usageChunk) {
-              yield usageChunk;
+          for (const event of transformSDKMessage(message, this.getTransformOptions(selectedModel, streamState))) {
+            this.noteVisibleStreamContent(message, event, {
+              onText: () => {
+                sawStreamText = true;
+              },
+              onThinking: () => {
+                sawStreamThinking = true;
+              },
+            });
+
+            if (isSessionInitEvent(event)) {
+              this.sessionManager.captureSession(event.sessionId);
+              streamSessionId = event.sessionId;
+            } else if (isContextWindowEvent(event)) {
+              const usageChunk = this.updateBufferedUsageContextWindow(event.contextWindow);
+              if (usageChunk) {
+                yield usageChunk;
+              }
+            } else if (isStreamChunk(event)) {
+              if (message.type === 'assistant' && sawStreamText && event.type === 'text') {
+                continue;
+              }
+              if (message.type === 'assistant' && sawStreamThinking && event.type === 'thinking') {
+                continue;
+              }
+              if (event.type === 'usage') {
+                yield this.bufferUsageChunk({ ...event, sessionId: streamSessionId });
+              } else {
+                yield event;
+              }
             }
-          } else if (isStreamChunk(event)) {
-            if (message.type === 'assistant' && sawStreamText && event.type === 'text') {
-              continue;
-            }
-            if (message.type === 'assistant' && sawStreamThinking && event.type === 'thinking') {
-              continue;
-            }
-            if (event.type === 'usage') {
-              yield this.bufferUsageChunk({ ...event, sessionId: streamSessionId });
-            } else {
-              yield event;
-            }
+          }
+
+          if (message.type === 'assistant' && message.uuid) {
+            this.recordTurnMetadata({ assistantMessageId: message.uuid });
+          }
+
+          if (message.type === 'result') {
+            sawStreamText = false;
+            sawStreamThinking = false;
           }
         }
 
-        if (message.type === 'assistant' && message.uuid) {
-          this.recordTurnMetadata({ assistantMessageId: message.uuid });
+        break;
+      } catch (error) {
+        // Re-throw session expired errors for outer retry logic to handle
+        if (isSessionExpiredError(error)) {
+          throw error;
         }
 
-        if (message.type === 'result') {
-          sawStreamText = false;
-          sawStreamThinking = false;
+        const formatted = this.formatClaudeSdkError(error, {
+          model: selectedModel,
+          cliPath,
+          capturedStderr: this.claudeCliStderr,
+        });
+
+        // Auto-downgrade for older Claude CLI that doesn't support --setting-sources.
+        // Use the formatted message for detection to avoid timing issues where
+        // stderr arrives slightly after process exit.
+        if (!this.disableSettingSourcesFlag && !sawAnyMessage && /--setting-sources/i.test(formatted)) {
+          this.disableSettingSourcesFlag = true;
+          this.clearClaudeCliDiagnostics();
+          continue;
         }
+
+        yield { type: 'error', content: formatted };
+        break;
+      } finally {
+        this.sessionManager.clearPendingModel();
+        this.currentAllowedTools = null; // Clear tool restriction after query
       }
-    } catch (error) {
-      // Re-throw session expired errors for outer retry logic to handle
-      if (isSessionExpiredError(error)) {
-        throw error;
-      }
-      yield {
-        type: 'error',
-        content: this.formatClaudeSdkError(error, { model: selectedModel, cliPath, capturedStderr: this.claudeCliStderr }),
-      };
-    } finally {
-      this.sessionManager.clearPendingModel();
-      this.currentAllowedTools = null; // Clear tool restriction after query
     }
 
     yield { type: 'done' };

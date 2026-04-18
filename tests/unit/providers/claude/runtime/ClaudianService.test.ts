@@ -1824,6 +1824,7 @@ describe('ClaudianService', () => {
       expect(errorChunk?.content).toContain('stderr:');
       expect(errorChunk?.content).toContain('Unknown model: ark-code-latest');
     });
+
   });
 
   describe('buildHistoryRebuildRequest', () => {
