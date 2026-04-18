@@ -45,6 +45,7 @@ export interface Options {
   systemPrompt?: string | { content: string; cacheControl?: { type: string } };
   mcpServers?: Record<string, unknown>;
   settingSources?: ('user' | 'project' | 'local')[];
+  stderr?: (data: string) => void;
   spawnClaudeCodeProcess?: (options: SpawnOptions) => SpawnedProcess;
   hooks?: {
     PreToolUse?: HookCallbackMatcher[];
@@ -235,7 +236,11 @@ async function* emitMessages(messages: any[], options: Options) {
     if (shouldThrowOnIteration && chunksEmitted >= throwAfterChunks) {
       // Reset for next query (allows recovery to work)
       shouldThrowOnIteration = false;
-      throw (crashError ?? new Error('Simulated consumer crash'));
+      const errToThrow = (crashError ?? new Error('Simulated consumer crash')) as any;
+      if (typeof errToThrow?.__mockStderr === 'string' && typeof options.stderr === 'function') {
+        options.stderr(errToThrow.__mockStderr);
+      }
+      throw errToThrow;
     }
 
     // Check for tool_use in assistant messages and run hooks

@@ -180,6 +180,11 @@ export class ClaudianService implements ChatRuntime {
   private bufferedUsageChunk: StreamChunk & { type: 'usage' } | null = null;
   private streamTransformState = createTransformStreamState();
 
+  // Recent stderr output from the Claude Code process.
+  // Used to enrich error messages when the process exits non-zero.
+  private claudeCliStderr = '';
+  private readonly claudeCliStderrMaxChars = 8000;
+
   private getLegacyPluginDeps(): ClaudianPlugin & {
     agentManager?: Pick<AppAgentManager, 'setBuiltinAgentNames'>;
     pluginManager?: AppPluginManager;
@@ -251,6 +256,32 @@ export class ClaudianService implements ChatRuntime {
   private resetTurnMetadata(): void {
     this.turnMetadata = {};
     this.bufferedUsageChunk = null;
+    this.clearClaudeCliDiagnostics();
+  }
+
+  private clearClaudeCliDiagnostics(): void {
+    this.claudeCliStderr = '';
+  }
+
+  private appendClaudeCliStderr(data: string): void {
+    if (!data) return;
+    // Keep the tail so we preserve the most recent failure context.
+    const next = this.claudeCliStderr + data;
+    this.claudeCliStderr = next.length > this.claudeCliStderrMaxChars
+      ? next.slice(-this.claudeCliStderrMaxChars)
+      : next;
+  }
+
+  private attachClaudeCliDiagnostics(options: Options): void {
+    const prev = options.stderr;
+    options.stderr = (data: string) => {
+      this.appendClaudeCliStderr(data);
+      try {
+        prev?.(data);
+      } catch {
+        // Ignore downstream stderr handler errors
+      }
+    };
   }
 
   private recordTurnMetadata(update: Partial<ChatTurnMetadata>): void {
@@ -545,7 +576,7 @@ export class ClaudianService implements ChatRuntime {
 
   private formatClaudeSdkError(
     error: unknown,
-    ctx?: { model?: string; cliPath?: string },
+    ctx?: { model?: string; cliPath?: string; capturedStderr?: string },
   ): string {
     const fallback = 'Unknown error';
     const err = error as any;
@@ -584,7 +615,7 @@ export class ClaudianService implements ChatRuntime {
       return `${text.slice(0, max)}\n…(truncated)`;
     };
 
-    const stderr = truncate(toText(err?.stderr) || '');
+    const stderr = truncate(toText(err?.stderr) || ctx?.capturedStderr || '');
     const stdout = truncate(toText(err?.stdout) || '');
 
     const detailLines: string[] = [];
@@ -753,7 +784,9 @@ export class ClaudianService implements ChatRuntime {
       externalContextPaths,
     };
 
-    return QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
+    const options = QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
+    this.attachClaudeCliDiagnostics(options);
+    return options;
   }
 
   /**
@@ -1253,6 +1286,7 @@ export class ClaudianService implements ChatRuntime {
                 content: this.formatClaudeSdkError(retryError, {
                   model: effectiveQueryOptions?.model ?? this.getScopedSettings().model,
                   cliPath: resolvedClaudePath,
+                  capturedStderr: this.claudeCliStderr,
                 }),
               };
             } finally {
@@ -1294,6 +1328,7 @@ export class ClaudianService implements ChatRuntime {
             content: this.formatClaudeSdkError(retryError, {
               model: effectiveQueryOptions?.model ?? this.getScopedSettings().model,
               cliPath: resolvedClaudePath,
+              capturedStderr: this.claudeCliStderr,
             }),
           };
         }
@@ -1305,6 +1340,7 @@ export class ClaudianService implements ChatRuntime {
         content: this.formatClaudeSdkError(error, {
           model: effectiveQueryOptions?.model ?? this.getScopedSettings().model,
           cliPath: resolvedClaudePath,
+          capturedStderr: this.claudeCliStderr,
         }),
       };
     } finally {
@@ -1471,6 +1507,7 @@ export class ClaudianService implements ChatRuntime {
           content: this.formatClaudeSdkError(state.error, {
             model: queryOptions?.model ?? this.getScopedSettings().model,
             cliPath,
+            capturedStderr: this.claudeCliStderr,
           }),
         };
       }
@@ -1597,6 +1634,7 @@ export class ClaudianService implements ChatRuntime {
     };
 
     const options = QueryOptionsBuilder.buildColdStartQueryOptions(ctx);
+    this.attachClaudeCliDiagnostics(options);
 
     let sawStreamText = false;
     let sawStreamThinking = false;
@@ -1661,7 +1699,7 @@ export class ClaudianService implements ChatRuntime {
       }
       yield {
         type: 'error',
-        content: this.formatClaudeSdkError(error, { model: selectedModel, cliPath }),
+        content: this.formatClaudeSdkError(error, { model: selectedModel, cliPath, capturedStderr: this.claudeCliStderr }),
       };
     } finally {
       this.sessionManager.clearPendingModel();

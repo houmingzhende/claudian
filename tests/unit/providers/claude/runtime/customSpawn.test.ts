@@ -58,26 +58,7 @@ describe('createCustomSpawnFunction', () => {
     expect(result).toBe(mockProcess);
   });
 
-  it('pipes stderr only when DEBUG_CLAUDE_AGENT_SDK is set', () => {
-    const mockProcess = createMockProcess();
-    spawnMock.mockReturnValue(mockProcess as unknown as ReturnType<typeof spawn>);
-
-    const spawnFn = createCustomSpawnFunction('/enhanced/path');
-    const signal = new AbortController().signal;
-    spawnFn({
-      command: 'node',
-      args: ['cli.js'],
-      cwd: '/tmp',
-      env: { DEBUG_CLAUDE_AGENT_SDK: '1' },
-      signal,
-    });
-
-    const spawnOptions = spawnMock.mock.calls[0][2];
-    expect(spawnOptions.stdio).toEqual(['pipe', 'pipe', 'pipe']);
-    expect(mockProcess.stderr?.on).toHaveBeenCalledWith('data', expect.any(Function));
-  });
-
-  it('ignores stderr when DEBUG_CLAUDE_AGENT_SDK is not set', () => {
+  it('pipes and drains stderr by default', () => {
     const mockProcess = createMockProcess();
     spawnMock.mockReturnValue(mockProcess as unknown as ReturnType<typeof spawn>);
 
@@ -92,8 +73,8 @@ describe('createCustomSpawnFunction', () => {
     });
 
     const spawnOptions = spawnMock.mock.calls[0][2];
-    expect(spawnOptions.stdio).toEqual(['pipe', 'pipe', 'ignore']);
-    expect(mockProcess.stderr?.on).not.toHaveBeenCalled();
+    expect(spawnOptions.stdio).toEqual(['pipe', 'pipe', 'pipe']);
+    expect(mockProcess.stderr?.on).toHaveBeenCalledWith('data', expect.any(Function));
   });
 
   it('throws when process streams are missing', () => {

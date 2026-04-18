@@ -9,7 +9,6 @@ export function createCustomSpawnFunction(
   return (options: SpawnOptions): SpawnedProcess => {
     let { command } = options;
     const { args, cwd, env, signal } = options;
-    const shouldPipeStderr = !!env?.DEBUG_CLAUDE_AGENT_SDK;
 
     // Resolve full path to avoid PATH lookup issues in GUI apps
     if (command === 'node') {
@@ -25,7 +24,9 @@ export function createCustomSpawnFunction(
     const child = spawn(command, args, {
       cwd,
       env: env as NodeJS.ProcessEnv,
-      stdio: ['pipe', 'pipe', shouldPipeStderr ? 'pipe' : 'ignore'],
+      // Always pipe stderr so we can surface Claude Code failures in the UI.
+      // IMPORTANT: We must also consume stderr data to avoid backpressure.
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
 
@@ -37,7 +38,8 @@ export function createCustomSpawnFunction(
       }
     }
 
-    if (shouldPipeStderr && child.stderr && typeof child.stderr.on === 'function') {
+    // Drain stderr to prevent the child from blocking if it writes a lot.
+    if (child.stderr && typeof child.stderr.on === 'function') {
       child.stderr.on('data', () => {});
     }
 

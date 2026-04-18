@@ -1802,6 +1802,28 @@ describe('ClaudianService', () => {
       expect(errorChunk?.content).toContain('stderr:');
       expect(errorChunk?.content).toContain('Unknown model: ark-code-latest');
     });
+
+    it('includes captured stderr when Claude CLI exits without stderr property', async () => {
+      sdkMock.setMockMessages([
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
+      ]);
+
+      const exitError = Object.assign(
+        new Error('Claude Code process exited with code 1'),
+        { __mockStderr: 'Unknown model: ark-code-latest' },
+      );
+      sdkMock.simulateCrash(0, exitError);
+
+      const chunks = await collectChunks(
+        service.query('hello', undefined, undefined, { forceColdStart: true, model: 'ark-code-latest' } as any)
+      );
+
+      const errorChunk = chunks.find(c => c.type === 'error') as any;
+      expect(errorChunk?.content).toContain('Claude Code process exited with code 1');
+      expect(errorChunk?.content).toContain('model: ark-code-latest');
+      expect(errorChunk?.content).toContain('stderr:');
+      expect(errorChunk?.content).toContain('Unknown model: ark-code-latest');
+    });
   });
 
   describe('buildHistoryRebuildRequest', () => {
