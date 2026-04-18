@@ -123,6 +123,22 @@ export const cocoSettingsTabRenderer: ProviderSettingsTabRenderer = {
         text.inputEl.style.width = '100%';
       });
 
+    new Setting(container)
+      .setName('Model options')
+      .setDesc('Optional: models shown in the dropdown for Coco. One per line or comma-separated.')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('gpt-4o\ngpt-4o-mini\n')
+          .setValue(cocoSettings.modelOptions)
+          .onChange(async (value) => {
+            updateCocoProviderSettings(settingsBag, { modelOptions: value });
+            await context.plugin.saveSettings();
+            context.refreshModelSelectors();
+          });
+        text.inputEl.style.width = '100%';
+        text.inputEl.style.minHeight = '80px';
+      });
+
     renderEnvironmentSettingsSection({
       container,
       plugin: context.plugin,
@@ -135,4 +151,3 @@ export const cocoSettingsTabRenderer: ProviderSettingsTabRenderer = {
     });
   },
 };
-

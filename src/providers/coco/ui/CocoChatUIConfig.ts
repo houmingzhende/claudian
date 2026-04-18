@@ -9,6 +9,26 @@ import { getCocoProviderSettings } from '../settings';
 export const COCO_DEFAULT_MODEL_OPTION = '__coco_default__';
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 
+function parseModelOptions(raw: string): string[] {
+  if (!raw.trim()) {
+    return [];
+  }
+  const parts = raw
+    .split(/\r?\n/)
+    .flatMap(line => line.split(','))
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const model of parts) {
+    if (seen.has(model)) continue;
+    seen.add(model);
+    result.push(model);
+  }
+  return result;
+}
+
 function readSavedProviderModel(settings: Record<string, unknown>): string {
   const saved = settings.savedProviderModel;
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
@@ -25,6 +45,11 @@ export const cocoChatUIConfig: ProviderChatUIConfig = {
     ];
 
     const cocoSettings = getCocoProviderSettings(settings);
+
+    for (const model of parseModelOptions(cocoSettings.modelOptions)) {
+      opts.unshift({ value: model, label: model, description: 'Custom (list)' });
+    }
+
     const configured = cocoSettings.defaultModel.trim();
     if (configured) {
       opts.unshift({ value: configured, label: configured, description: 'Custom (Claudian)' });
@@ -74,6 +99,9 @@ export const cocoChatUIConfig: ProviderChatUIConfig = {
     }
 
     const cocoSettings = getCocoProviderSettings(settings);
+    if (parseModelOptions(cocoSettings.modelOptions).includes(normalized)) {
+      return true;
+    }
     if (cocoSettings.defaultModel.trim() === normalized) {
       return true;
     }

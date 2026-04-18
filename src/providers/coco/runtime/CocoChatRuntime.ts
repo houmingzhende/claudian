@@ -1,6 +1,7 @@
 import { type ChildProcessWithoutNullStreams,spawn } from 'child_process';
 
 import { getRuntimeEnvironmentVariables } from '../../../core/providers/providerEnvironment';
+import { ProviderSettingsCoordinator } from '../../../core/providers/ProviderSettingsCoordinator';
 import { ProviderWorkspaceRegistry } from '../../../core/providers/ProviderWorkspaceRegistry';
 import type { ProviderCapabilities, ProviderId } from '../../../core/providers/types';
 import type { ChatRuntime } from '../../../core/runtime/ChatRuntime';
@@ -229,6 +230,7 @@ export class CocoChatRuntime implements ChatRuntime {
     }
 
     const settings = this.plugin.settings as unknown as Record<string, unknown>;
+    const cocoSettingsSnapshot = ProviderSettingsCoordinator.getProviderSettingsSnapshot(settings, 'coco');
     const envVars = getRuntimeEnvironmentVariables(settings, 'coco');
     const cliResolver = ProviderWorkspaceRegistry.getCliResolver('coco');
     const cliPath = (
@@ -245,7 +247,11 @@ export class CocoChatRuntime implements ChatRuntime {
 
     const prompt = buildCocoPrompt(turn, conversationHistory);
 
-    const modelFromOptions = (queryOptions?.model ?? settings.model) as string | undefined;
+    const modelFromOptions = (
+      queryOptions?.model
+      ?? (cocoSettingsSnapshot.model as string | undefined)
+      ?? settings.model
+    ) as string | undefined;
     const model = typeof modelFromOptions === 'string' ? modelFromOptions.trim() : '';
     const modelName = (model && model !== COCO_DEFAULT_MODEL_OPTION) ? model : undefined;
 

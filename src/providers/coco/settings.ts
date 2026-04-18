@@ -32,6 +32,9 @@ export interface CocoProviderSettings {
   /** Optional model name to pass via `--config model.name=<name>`. */
   defaultModel: string;
 
+  /** Optional list of models shown in the model dropdown (newline/comma-separated). */
+  modelOptions: string;
+
   /** Provider-scoped environment variables (legacy mirror; canonical lives in providerEnvironment). */
   environmentVariables: string;
   /** Hash of provider-scoped environment variables used to invalidate sessions. */
@@ -43,6 +46,7 @@ export const DEFAULT_COCO_PROVIDER_SETTINGS: Readonly<CocoProviderSettings> = Ob
   cliPath: '',
   cliPathsByHost: {},
   defaultModel: '',
+  modelOptions: '',
   environmentVariables: '',
   environmentHash: '',
 });
@@ -61,6 +65,7 @@ export function getCocoProviderSettings(settings: Record<string, unknown>): Coco
     cliPath: hostCliPath || normalizeOptionalString(config.cliPath) || DEFAULT_COCO_PROVIDER_SETTINGS.cliPath,
     cliPathsByHost,
     defaultModel: normalizeOptionalString(config.defaultModel) || DEFAULT_COCO_PROVIDER_SETTINGS.defaultModel,
+    modelOptions: normalizeOptionalString(config.modelOptions) || DEFAULT_COCO_PROVIDER_SETTINGS.modelOptions,
     environmentVariables: (config.environmentVariables as string | undefined)
       ?? getProviderEnvironmentVariables(settings, 'coco')
       ?? DEFAULT_COCO_PROVIDER_SETTINGS.environmentVariables,
@@ -93,6 +98,7 @@ export function updateCocoProviderSettings(
     cliPath: 'cliPath' in updates ? normalizeOptionalString(updates.cliPath) : current.cliPath,
     cliPathsByHost,
     defaultModel: 'defaultModel' in updates ? normalizeOptionalString(updates.defaultModel) : current.defaultModel,
+    modelOptions: 'modelOptions' in updates ? normalizeOptionalString(updates.modelOptions) : current.modelOptions,
   };
 
   setProviderConfig(settings, 'coco', {
@@ -100,6 +106,7 @@ export function updateCocoProviderSettings(
     cliPath: next.cliPath,
     cliPathsByHost: next.cliPathsByHost,
     defaultModel: next.defaultModel,
+    modelOptions: next.modelOptions,
     environmentVariables: next.environmentVariables,
     environmentHash: next.environmentHash,
   });
