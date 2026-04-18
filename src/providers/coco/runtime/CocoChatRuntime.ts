@@ -232,6 +232,7 @@ export class CocoChatRuntime implements ChatRuntime {
     const settings = this.plugin.settings as unknown as Record<string, unknown>;
     const cocoSettingsSnapshot = ProviderSettingsCoordinator.getProviderSettingsSnapshot(settings, 'coco');
     const envVars = getRuntimeEnvironmentVariables(settings, 'coco');
+    const cocoProviderSettings = getCocoProviderSettings(settings);
     const cliResolver = ProviderWorkspaceRegistry.getCliResolver('coco');
     const cliPath = (
       this.plugin.getResolvedProviderCliPath?.('coco')
@@ -267,7 +268,8 @@ export class CocoChatRuntime implements ChatRuntime {
     let finished = false;
     let lastOutputAt = Date.now();
     const startedAt = Date.now();
-    const NO_OUTPUT_TIMEOUT_MS = 30_000;
+    const noOutputTimeoutSeconds = Math.max(0, Math.floor(cocoProviderSettings.noOutputTimeoutSeconds ?? 300));
+    const NO_OUTPUT_TIMEOUT_MS = noOutputTimeoutSeconds * 1000;
 
     const finishOnce = (handler: () => void) => {
       if (finished) return;
@@ -296,7 +298,7 @@ export class CocoChatRuntime implements ChatRuntime {
         return;
       }
       const now = Date.now();
-      if (now - lastOutputAt >= NO_OUTPUT_TIMEOUT_MS) {
+      if (NO_OUTPUT_TIMEOUT_MS > 0 && now - lastOutputAt >= NO_OUTPUT_TIMEOUT_MS) {
         const stderr = stderrChunks.join('').trim();
         killProcess();
         finishWithError(
@@ -305,10 +307,10 @@ export class CocoChatRuntime implements ChatRuntime {
             + '请确认：1) coco 可在终端执行 `coco --print`；2) 已完成必要的登录/鉴权；3) COCO_*/TRAECLI_* 环境变量已配置。'
         );
       }
-      if (now - startedAt >= 5 * 60_000) {
+      if (now - startedAt >= 60 * 60_000) {
         // Hard stop to avoid permanently stuck tabs.
         killProcess();
-        finishWithError('coco 执行超时（5 分钟）。已自动终止。');
+        finishWithError('coco 执行超时（60 分钟）。已自动终止。');
       }
     }, 500);
 

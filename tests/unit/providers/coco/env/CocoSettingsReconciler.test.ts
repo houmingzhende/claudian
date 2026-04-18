@@ -44,5 +44,6 @@ describe('cocoSettingsReconciler', () => {
     expect(conversations[0]?.sessionId).toBe(null);
     expect(conversations[0]?.providerState).toBe(undefined);
     expect(getCocoProviderSettings(settings).environmentHash).not.toBe('');
+    expect(getCocoProviderSettings(settings).noOutputTimeoutSeconds).toBe(300);
   });
 });

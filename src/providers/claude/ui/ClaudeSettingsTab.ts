@@ -184,6 +184,22 @@ export const claudeSettingsTabRenderer: ProviderSettingsTabRenderer = {
           })
       );
 
+    new Setting(container)
+      .setName('Model options')
+      .setDesc('Optional: add custom Claude model IDs to the dropdown. One per line or comma-separated.')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('ark-code-latest\n')
+          .setValue(claudeSettings.modelOptions ?? '')
+          .onChange(async (value) => {
+            updateClaudeProviderSettings(settingsBag, { modelOptions: value });
+            await context.plugin.saveSettings();
+            context.refreshModelSelectors();
+          });
+        text.inputEl.style.width = '100%';
+        text.inputEl.style.minHeight = '80px';
+      });
+
     // --- Slash Commands ---
 
     new Setting(container).setName(t('settings.slashCommands.name')).setHeading();

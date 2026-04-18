@@ -139,6 +139,20 @@ export const cocoSettingsTabRenderer: ProviderSettingsTabRenderer = {
         text.inputEl.style.minHeight = '80px';
       });
 
+    new Setting(container)
+      .setName('No-output timeout (seconds)')
+      .setDesc('Abort coco if it produces no stdout/stderr output for this long. Set to 0 to disable.')
+      .addText((text) => {
+        text
+          .setPlaceholder('300')
+          .setValue(String(cocoSettings.noOutputTimeoutSeconds ?? 300))
+          .onChange(async (value) => {
+            updateCocoProviderSettings(settingsBag, { noOutputTimeoutSeconds: value });
+            await context.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
     renderEnvironmentSettingsSection({
       container,
       plugin: context.plugin,

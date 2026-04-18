@@ -7,6 +7,19 @@ function normalizeOptionalString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeOptionalNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const n = Number(value);
+    if (Number.isFinite(n)) {
+      return n;
+    }
+  }
+  return null;
+}
+
 function normalizeHostnameCliPaths(value: unknown): HostnameCliPaths {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -35,6 +48,9 @@ export interface CocoProviderSettings {
   /** Optional list of models shown in the model dropdown (newline/comma-separated). */
   modelOptions: string;
 
+  /** No-output timeout in seconds (0 disables). */
+  noOutputTimeoutSeconds: number;
+
   /** Provider-scoped environment variables (legacy mirror; canonical lives in providerEnvironment). */
   environmentVariables: string;
   /** Hash of provider-scoped environment variables used to invalidate sessions. */
@@ -47,6 +63,7 @@ export const DEFAULT_COCO_PROVIDER_SETTINGS: Readonly<CocoProviderSettings> = Ob
   cliPathsByHost: {},
   defaultModel: '',
   modelOptions: '',
+  noOutputTimeoutSeconds: 300,
   environmentVariables: '',
   environmentHash: '',
 });
@@ -66,6 +83,10 @@ export function getCocoProviderSettings(settings: Record<string, unknown>): Coco
     cliPathsByHost,
     defaultModel: normalizeOptionalString(config.defaultModel) || DEFAULT_COCO_PROVIDER_SETTINGS.defaultModel,
     modelOptions: normalizeOptionalString(config.modelOptions) || DEFAULT_COCO_PROVIDER_SETTINGS.modelOptions,
+    noOutputTimeoutSeconds: (
+      normalizeOptionalNumber(config.noOutputTimeoutSeconds)
+      ?? DEFAULT_COCO_PROVIDER_SETTINGS.noOutputTimeoutSeconds
+    ),
     environmentVariables: (config.environmentVariables as string | undefined)
       ?? getProviderEnvironmentVariables(settings, 'coco')
       ?? DEFAULT_COCO_PROVIDER_SETTINGS.environmentVariables,
@@ -99,6 +120,12 @@ export function updateCocoProviderSettings(
     cliPathsByHost,
     defaultModel: 'defaultModel' in updates ? normalizeOptionalString(updates.defaultModel) : current.defaultModel,
     modelOptions: 'modelOptions' in updates ? normalizeOptionalString(updates.modelOptions) : current.modelOptions,
+    noOutputTimeoutSeconds: 'noOutputTimeoutSeconds' in updates
+      ? (
+        normalizeOptionalNumber(updates.noOutputTimeoutSeconds)
+        ?? DEFAULT_COCO_PROVIDER_SETTINGS.noOutputTimeoutSeconds
+      )
+      : current.noOutputTimeoutSeconds,
   };
 
   setProviderConfig(settings, 'coco', {
@@ -107,6 +134,7 @@ export function updateCocoProviderSettings(
     cliPathsByHost: next.cliPathsByHost,
     defaultModel: next.defaultModel,
     modelOptions: next.modelOptions,
+    noOutputTimeoutSeconds: next.noOutputTimeoutSeconds,
     environmentVariables: next.environmentVariables,
     environmentHash: next.environmentHash,
   });

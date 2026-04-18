@@ -37,22 +37,60 @@ const CLAUDE_PERMISSION_MODE_TOGGLE: ProviderPermissionModeToggleConfig = {
   planLabel: 'PLAN',
 };
 
+function parseModelOptions(raw: string): string[] {
+  if (!raw.trim()) {
+    return [];
+  }
+  const parts = raw
+    .split(/\r?\n/)
+    .flatMap(line => line.split(','))
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const model of parts) {
+    if (seen.has(model)) continue;
+    seen.add(model);
+    result.push(model);
+  }
+  return result;
+}
+
 export const claudeChatUIConfig: ProviderChatUIConfig = {
   getModelOptions(settings) {
-    const customModels = getModelsFromEnvironment(
+    const claudeSettings = getClaudeProviderSettings(settings);
+
+    const envModels = getModelsFromEnvironment(
       getRuntimeEnvironmentVariables(settings, 'claude'),
     );
-    if (customModels.length > 0) {
-      return customModels;
+    const baseModels = envModels.length > 0
+      ? envModels
+      : filterVisibleModelOptions(
+        [...DEFAULT_CLAUDE_MODELS],
+        claudeSettings.enableOpus1M,
+        claudeSettings.enableSonnet1M,
+      );
+
+    const opts: ProviderUIOption[] = [...baseModels];
+
+    for (const model of parseModelOptions(claudeSettings.modelOptions ?? '')) {
+      if (!opts.some(o => o.value === model)) {
+        opts.unshift({ value: model, label: model, description: 'Custom (list)' });
+      }
     }
 
-    const models = [...DEFAULT_CLAUDE_MODELS];
-    const claudeSettings = getClaudeProviderSettings(settings);
-    return filterVisibleModelOptions(
-      models,
-      claudeSettings.enableOpus1M,
-      claudeSettings.enableSonnet1M,
-    );
+    const active = typeof settings.model === 'string' ? settings.model.trim() : '';
+    if (active && !opts.some(o => o.value === active)) {
+      opts.unshift({ value: active, label: active, description: 'Active' });
+    }
+
+    const lastCustom = typeof settings.lastCustomModel === 'string' ? settings.lastCustomModel.trim() : '';
+    if (lastCustom && !opts.some(o => o.value === lastCustom)) {
+      opts.push({ value: lastCustom, label: lastCustom, description: 'Saved' });
+    }
+
+    return opts;
   },
 
   ownsModel(model: string, settings: Record<string, unknown>): boolean {
