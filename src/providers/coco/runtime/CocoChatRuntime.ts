@@ -231,7 +231,18 @@ export class CocoChatRuntime implements ChatRuntime {
     const settings = this.plugin.settings as unknown as Record<string, unknown>;
     const envVars = getRuntimeEnvironmentVariables(settings, 'coco');
     const cliResolver = ProviderWorkspaceRegistry.getCliResolver('coco');
-    const cliPath = cliResolver?.resolveFromSettings(settings) ?? 'coco';
+    const cliPath = (
+      this.plugin.getResolvedProviderCliPath?.('coco')
+      ?? cliResolver?.resolveFromSettings(settings)
+      ?? 'coco'
+    );
+
+    if (!cliPath.trim()) {
+      yield { type: 'error', content: 'Coco CLI path 为空。请在设置里填写 Coco CLI path，或确保 PATH 中存在 coco。' };
+      yield { type: 'done' };
+      return;
+    }
+
     const prompt = buildCocoPrompt(turn, conversationHistory);
 
     const modelFromOptions = (queryOptions?.model ?? settings.model) as string | undefined;
@@ -248,6 +259,9 @@ export class CocoChatRuntime implements ChatRuntime {
 
     const stderrChunks: string[] = [];
     let finished = false;
+    let lastOutputAt = Date.now();
+    const startedAt = Date.now();
+    const NO_OUTPUT_TIMEOUT_MS = 30_000;
 
     const finishOnce = (handler: () => void) => {
       if (finished) return;
@@ -255,8 +269,46 @@ export class CocoChatRuntime implements ChatRuntime {
       handler();
     };
 
+    const finishWithError = (message: string) => {
+      finishOnce(() => {
+        queue.push({ type: 'error', content: message });
+        queue.push({ type: 'done' });
+        queue.finish();
+      });
+    };
+
+    const killProcess = () => {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+    };
+
+    const timeoutTimer = setInterval(() => {
+      if (finished || this.canceled) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastOutputAt >= NO_OUTPUT_TIMEOUT_MS) {
+        const stderr = stderrChunks.join('').trim();
+        killProcess();
+        finishWithError(
+          stderr
+          || `coco has not produced output for ${Math.round(NO_OUTPUT_TIMEOUT_MS / 1000)}s. `
+            + '请确认：1) coco 可在终端执行 `coco --print`；2) 已完成必要的登录/鉴权；3) COCO_*/TRAECLI_* 环境变量已配置。'
+        );
+      }
+      if (now - startedAt >= 5 * 60_000) {
+        // Hard stop to avoid permanently stuck tabs.
+        killProcess();
+        finishWithError('coco 执行超时（5 分钟）。已自动终止。');
+      }
+    }, 500);
+
     proc.stdout.on('data', (data: Buffer) => {
       if (this.canceled) return;
+      lastOutputAt = Date.now();
       const text = data.toString('utf8');
       if (text) {
         queue.push({ type: 'text', content: text });
@@ -265,17 +317,38 @@ export class CocoChatRuntime implements ChatRuntime {
 
     proc.stdout.on('error', (err) => {
       if (this.canceled) return;
-      queue.push({ type: 'error', content: String(err) });
+      finishWithError(String(err));
     });
 
     proc.stderr.on('data', (data: Buffer) => {
+      lastOutputAt = Date.now();
       stderrChunks.push(data.toString('utf8'));
     });
 
-    proc.on('exit', (code, signal) => {
+    proc.stderr.on('error', (err) => {
+      if (this.canceled) return;
+      finishWithError(String(err));
+    });
+
+    proc.on('error', (err) => {
+      if (this.canceled) return;
+      const message = (err as any)?.code === 'ENOENT'
+        ? `找不到 coco 可执行文件：${cliPath}。请在设置里配置 Coco CLI path，或确保 PATH 中能找到 coco。`
+        : String(err);
+      finishWithError(message);
+    });
+
+    proc.on('close', (code, signal) => {
       finishOnce(() => {
+        clearInterval(timeoutTimer);
         const stderr = stderrChunks.join('').trim();
-        if (!this.canceled && code && code !== 0) {
+        if (this.canceled) {
+          // cancel() already emitted done.
+          queue.finish();
+          return;
+        }
+
+        if (code !== null && code !== 0) {
           queue.push({
             type: 'error',
             content: stderr || `coco exited with code ${code}${signal ? ` (signal ${signal})` : ''}`,
@@ -291,6 +364,7 @@ export class CocoChatRuntime implements ChatRuntime {
         yield chunk;
       }
     } finally {
+      clearInterval(timeoutTimer);
       this.activeProc = null;
       this.activeQueue = null;
       finishOnce(() => {

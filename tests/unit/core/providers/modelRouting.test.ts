@@ -22,6 +22,18 @@ describe('getProviderForModel', () => {
     expect(getProviderForModel('some-unknown-model')).toBe('claude');
   });
 
+  it('does not route Claude models to coco when claude is the settings provider', () => {
+    const settings = {
+      settingsProvider: 'claude',
+      model: 'claude-sonnet-4-5-20250514',
+      providerConfigs: {
+        coco: { enabled: true, defaultModel: '' },
+      },
+      sharedEnvironmentVariables: '',
+    };
+    expect(getProviderForModel('claude-sonnet-4-5-20250514', settings)).toBe('claude');
+  });
+
   it('routes models starting with gpt- to codex', () => {
     expect(getProviderForModel('gpt-4o')).toBe('codex');
     expect(getProviderForModel('gpt-custom')).toBe('codex');

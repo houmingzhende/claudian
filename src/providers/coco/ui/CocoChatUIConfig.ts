@@ -57,7 +57,39 @@ export const cocoChatUIConfig: ProviderChatUIConfig = {
   },
 
   ownsModel(model: string, settings: Record<string, unknown>): boolean {
-    return this.getModelOptions(settings).some((option: ProviderUIOption) => option.value === model);
+    const normalized = model.trim();
+    if (!normalized) {
+      return false;
+    }
+
+    // Always claim the explicit "use coco default" sentinel.
+    if (normalized === COCO_DEFAULT_MODEL_OPTION) {
+      return true;
+    }
+
+    // If the user explicitly selected Coco as the settings provider, allow any
+    // custom model string to stay routed to Coco.
+    if (settings.settingsProvider === 'coco') {
+      return true;
+    }
+
+    const cocoSettings = getCocoProviderSettings(settings);
+    if (cocoSettings.defaultModel.trim() === normalized) {
+      return true;
+    }
+
+    const envVars = getRuntimeEnvironmentVariables(settings, 'coco');
+    const envModel = (envVars.COCO_MODEL_NAME ?? envVars.TRAECLI_MODEL_NAME ?? '').trim();
+    if (envModel && envModel === normalized) {
+      return true;
+    }
+
+    const savedModel = readSavedProviderModel(settings);
+    if (savedModel && savedModel === normalized) {
+      return true;
+    }
+
+    return false;
   },
 
   isAdaptiveReasoningModel(): boolean {
