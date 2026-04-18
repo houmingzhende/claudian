@@ -14,7 +14,7 @@ import * as sessionUtils from '@/utils/session';
 const sdkMock = sdkModule as unknown as {
   setMockMessages: (messages: any[], options?: { appendResult?: boolean }) => void;
   resetMockMessages: () => void;
-  simulateCrash: (afterChunks?: number) => void;
+  simulateCrash: (afterChunks?: number, error?: unknown) => void;
   query: typeof sdkModule.query;
 };
 
@@ -1779,6 +1779,28 @@ describe('ClaudianService', () => {
       const errorChunks = chunks.filter(c => c.type === 'error');
       expect(errorChunks).toHaveLength(1);
       expect(errorChunks[0].content).toContain('Simulated consumer crash');
+    });
+
+    it('includes stderr and model when Claude CLI exits (custom model)', async () => {
+      sdkMock.setMockMessages([
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
+      ]);
+
+      const exitError = Object.assign(
+        new Error('Claude Code process exited with code 1'),
+        { stderr: 'Unknown model: ark-code-latest' },
+      );
+      sdkMock.simulateCrash(0, exitError);
+
+      const chunks = await collectChunks(
+        service.query('hello', undefined, undefined, { forceColdStart: true, model: 'ark-code-latest' } as any)
+      );
+
+      const errorChunk = chunks.find(c => c.type === 'error') as any;
+      expect(errorChunk?.content).toContain('Claude Code process exited with code 1');
+      expect(errorChunk?.content).toContain('model: ark-code-latest');
+      expect(errorChunk?.content).toContain('stderr:');
+      expect(errorChunk?.content).toContain('Unknown model: ark-code-latest');
     });
   });
 

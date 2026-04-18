@@ -543,6 +543,73 @@ export class ClaudianService implements ChatRuntime {
     return e.code === 'EPIPE' || (typeof e.message === 'string' && e.message.includes('EPIPE'));
   }
 
+  private formatClaudeSdkError(
+    error: unknown,
+    ctx?: { model?: string; cliPath?: string },
+  ): string {
+    const fallback = 'Unknown error';
+    const err = error as any;
+    const baseMessage = error instanceof Error
+      ? (error.message || fallback)
+      : (typeof err?.message === 'string' ? err.message : fallback);
+
+    const isProcessExit = /process exited|exited with code|exit code/i.test(baseMessage);
+
+    const toText = (value: unknown): string | null => {
+      if (value === null || value === undefined) return null;
+      if (typeof value === 'string') return value;
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+      if (value instanceof Uint8Array) {
+        try {
+          return new TextDecoder('utf-8').decode(value);
+        } catch {
+          return null;
+        }
+      }
+      // Node buffers in some test/runtime environments
+      const maybeBuf = value as { type?: unknown; data?: unknown };
+      if (maybeBuf && typeof maybeBuf === 'object' && maybeBuf.type === 'Buffer' && Array.isArray(maybeBuf.data)) {
+        try {
+          const bytes = Uint8Array.from(maybeBuf.data);
+          return new TextDecoder('utf-8').decode(bytes);
+        } catch {
+          return null;
+        }
+      }
+      try { return JSON.stringify(value); } catch { return String(value); }
+    };
+
+    const truncate = (text: string, max = 4000): string => {
+      if (text.length <= max) return text;
+      return `${text.slice(0, max)}\n…(truncated)`;
+    };
+
+    const stderr = truncate(toText(err?.stderr) || '');
+    const stdout = truncate(toText(err?.stdout) || '');
+
+    const detailLines: string[] = [];
+    if (isProcessExit && ctx?.model) detailLines.push(`model: ${ctx.model}`);
+    if (isProcessExit && ctx?.cliPath) detailLines.push(`cli: ${ctx.cliPath}`);
+
+    const code = err?.code ?? err?.exitCode ?? err?.status;
+    const signal = err?.signal;
+    if (isProcessExit && (code !== undefined || signal !== undefined)) {
+      if (code !== undefined) detailLines.push(`code: ${String(code)}`);
+      if (signal !== undefined) detailLines.push(`signal: ${String(signal)}`);
+    }
+
+    if (stderr.trim().length > 0) detailLines.push(`stderr:\n${stderr.trim()}`);
+    if (stdout.trim().length > 0) detailLines.push(`stdout:\n${stdout.trim()}`);
+
+    const causeMsg = error instanceof Error && error.cause instanceof Error ? error.cause.message : null;
+    if (causeMsg && causeMsg !== baseMessage) detailLines.push(`cause: ${causeMsg}`);
+
+    if (detailLines.length === 0) {
+      return baseMessage;
+    }
+    return `${baseMessage}\n\n${detailLines.join('\n')}`;
+  }
+
   /**
    * Closes the persistent query and cleans up resources.
    */
@@ -1181,8 +1248,13 @@ export class ClaudianService implements ChatRuntime {
                 effectiveQueryOptions
               );
             } catch (retryError) {
-              const msg = retryError instanceof Error ? retryError.message : 'Unknown error';
-              yield { type: 'error', content: msg };
+              yield {
+                type: 'error',
+                content: this.formatClaudeSdkError(retryError, {
+                  model: effectiveQueryOptions?.model ?? this.getScopedSettings().model,
+                  cliPath: resolvedClaudePath,
+                }),
+              };
             } finally {
               this.coldStartInProgress = false;
               this.abortController = null;
@@ -1217,14 +1289,24 @@ export class ClaudianService implements ChatRuntime {
             effectiveQueryOptions
           );
         } catch (retryError) {
-          const msg = retryError instanceof Error ? retryError.message : 'Unknown error';
-          yield { type: 'error', content: msg };
+          yield {
+            type: 'error',
+            content: this.formatClaudeSdkError(retryError, {
+              model: effectiveQueryOptions?.model ?? this.getScopedSettings().model,
+              cliPath: resolvedClaudePath,
+            }),
+          };
         }
         return;
       }
 
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      yield { type: 'error', content: msg };
+      yield {
+        type: 'error',
+        content: this.formatClaudeSdkError(error, {
+          model: effectiveQueryOptions?.model ?? this.getScopedSettings().model,
+          cliPath: resolvedClaudePath,
+        }),
+      };
     } finally {
       this.coldStartInProgress = false;
       this.abortController = null;
@@ -1384,7 +1466,13 @@ export class ClaudianService implements ChatRuntime {
         if (isSessionExpiredError(state.error)) {
           throw state.error;
         }
-        yield { type: 'error', content: state.error.message };
+        yield {
+          type: 'error',
+          content: this.formatClaudeSdkError(state.error, {
+            model: queryOptions?.model ?? this.getScopedSettings().model,
+            cliPath,
+          }),
+        };
       }
 
       // Clear message tracking after completion
@@ -1571,8 +1659,10 @@ export class ClaudianService implements ChatRuntime {
       if (isSessionExpiredError(error)) {
         throw error;
       }
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      yield { type: 'error', content: msg };
+      yield {
+        type: 'error',
+        content: this.formatClaudeSdkError(error, { model: selectedModel, cliPath }),
+      };
     } finally {
       this.sessionManager.clearPendingModel();
       this.currentAllowedTools = null; // Clear tool restriction after query

@@ -133,6 +133,7 @@ let lastResponse: (AsyncGenerator<any> & {
 let shouldThrowOnIteration = false;
 let throwAfterChunks = 0;
 let queryCallCount = 0;
+let crashError: unknown = null;
 
 // Allow tests to set custom mock messages
 export function setMockMessages(messages: any[], options?: { appendResult?: boolean }) {
@@ -149,6 +150,7 @@ export function resetMockMessages() {
   shouldThrowOnIteration = false;
   throwAfterChunks = 0;
   queryCallCount = 0;
+  crashError = null;
 }
 
 export function setMockSupportedCommands(
@@ -161,9 +163,10 @@ export function setMockSupportedCommands(
  * Configure the mock to throw an error during iteration.
  * @param afterChunks - Number of chunks to emit before throwing (0 = throw immediately)
  */
-export function simulateCrash(afterChunks = 0) {
+export function simulateCrash(afterChunks = 0, error: unknown = new Error('Simulated consumer crash')) {
   shouldThrowOnIteration = true;
   throwAfterChunks = afterChunks;
+  crashError = error;
 }
 
 /**
@@ -232,7 +235,7 @@ async function* emitMessages(messages: any[], options: Options) {
     if (shouldThrowOnIteration && chunksEmitted >= throwAfterChunks) {
       // Reset for next query (allows recovery to work)
       shouldThrowOnIteration = false;
-      throw new Error('Simulated consumer crash');
+      throw (crashError ?? new Error('Simulated consumer crash'));
     }
 
     // Check for tool_use in assistant messages and run hooks

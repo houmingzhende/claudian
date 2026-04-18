@@ -147,7 +147,17 @@ export const cocoSettingsTabRenderer: ProviderSettingsTabRenderer = {
           .setPlaceholder('300')
           .setValue(String(cocoSettings.noOutputTimeoutSeconds ?? 300))
           .onChange(async (value) => {
-            updateCocoProviderSettings(settingsBag, { noOutputTimeoutSeconds: value });
+            const trimmed = value.trim();
+            if (trimmed.length === 0) {
+              updateCocoProviderSettings(settingsBag, { noOutputTimeoutSeconds: undefined });
+              await context.plugin.saveSettings();
+              return;
+            }
+            const parsed = Number.parseInt(trimmed, 10);
+            if (Number.isNaN(parsed)) {
+              return;
+            }
+            updateCocoProviderSettings(settingsBag, { noOutputTimeoutSeconds: Math.max(0, parsed) });
             await context.plugin.saveSettings();
           });
         text.inputEl.style.width = '100%';
