@@ -361,24 +361,112 @@ export class InputController {
       // Pass history WITHOUT current turn (userMsg + assistantMsg we just added)
       // This prevents duplication when rebuilding context for new sessions
       const previousMessages = state.messages.slice(0, -2);
-      for await (const chunk of agentService.query(preparedTurn, previousMessages)) {
-        if (state.streamGeneration !== streamGeneration) {
-          wasInvalidated = true;
-          break;
+
+      // Watchdog: avoid infinite "Vibing..." when providers produce no output.
+      // - After 2 minutes: show a notice (still keep waiting)
+      // - After 10 minutes: auto-cancel this turn to unblock the UI
+      const NO_OUTPUT_WARN_MS = 2 * 60_000;
+      const NO_OUTPUT_ABORT_MS = 10 * 60_000;
+
+      let lastChunkAt = Date.now();
+      let warnedNoOutput = false;
+      let forceAbort = false;
+
+      const noOutputInterval = globalThis.setInterval(() => {
+        if (forceAbort || wasInvalidated || state.streamGeneration !== streamGeneration) {
+          return;
         }
         if (state.cancelRequested) {
-          wasInterrupted = true;
-          break;
+          return;
         }
-
-        if (this.handleProviderMessageBoundaryChunk(chunk)) {
-          continue;
+        const elapsed = Date.now() - lastChunkAt;
+        if (!warnedNoOutput && elapsed >= NO_OUTPUT_WARN_MS) {
+          warnedNoOutput = true;
+          void streamController.appendText(
+            `\n\n⚠️ **Notice:** 已等待 ${Math.round(elapsed / 1000)}s 仍无任何输出。` +
+              ' 可能原因：网络/鉴权卡住、CLI 等待交互、或 SDK/CLI 协议不匹配。' +
+              ' 建议：先点 Cancel，再重试；或重启 Obsidian；或升级 Claude Code CLI。'
+          );
         }
+        if (elapsed >= NO_OUTPUT_ABORT_MS) {
+          forceAbort = true;
+          state.cancelRequested = true;
+          try {
+            agentService.cancel();
+          } catch {
+            // ignore
+          }
+          void streamController.appendText(
+            `\n\n❌ **Error:** 已等待 ${Math.round(elapsed / 1000)}s 仍无任何输出，已自动取消本次请求以避免无限等待。`
+          );
+        }
+      }, 1000);
 
-        await streamController.handleStreamChunk(
-          chunk,
-          this.activeStreamingAssistantMessage ?? assistantMsg,
-        );
+      try {
+        const stream = agentService.query(preparedTurn, previousMessages);
+        const iterator = stream[Symbol.asyncIterator]();
+
+        const waitMs = (ms: number) => new Promise<void>((resolve) => {
+          globalThis.setTimeout(resolve, ms);
+        });
+
+        type NextOutcome =
+          | { kind: 'tick' }
+          | { kind: 'result'; result: IteratorResult<StreamChunk> };
+
+        let pendingNext: Promise<IteratorResult<StreamChunk>> | null = null;
+
+        // Manual iteration so we can exit even if a provider never yields.
+        while (true) {
+          if (state.streamGeneration !== streamGeneration) {
+            wasInvalidated = true;
+            break;
+          }
+          if (state.cancelRequested || forceAbort) {
+            wasInterrupted = true;
+            try {
+              await iterator.return?.(undefined);
+            } catch {
+              // ignore
+            }
+            // Avoid unhandled promise rejections if an in-flight next() resolves later.
+            pendingNext?.catch(() => {});
+            break;
+          }
+
+          if (!pendingNext) {
+            pendingNext = iterator.next();
+          }
+
+          const outcome: NextOutcome = await Promise.race([
+            pendingNext.then((result) => ({ kind: 'result', result } as const)),
+            waitMs(250).then(() => ({ kind: 'tick' } as const)),
+          ]);
+
+          if (outcome.kind === 'tick') {
+            // Poll state changes (cancel/invalidated) even when no chunks arrive.
+            continue;
+          }
+
+          pendingNext = null;
+          const next = outcome.result;
+          if (next.done) break;
+
+          const chunk = next.value;
+          lastChunkAt = Date.now();
+          warnedNoOutput = false;
+
+          if (this.handleProviderMessageBoundaryChunk(chunk)) {
+            continue;
+          }
+
+          await streamController.handleStreamChunk(
+            chunk,
+            this.activeStreamingAssistantMessage ?? assistantMsg,
+          );
+        }
+      } finally {
+        globalThis.clearInterval(noOutputInterval);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';

@@ -11,17 +11,17 @@
  * - Dynamic updates (model, thinking tokens, permission mode, MCP servers)
  */
 
-import type {
-  CanUseTool,
-  Options,
-  PermissionMode as SDKPermissionMode,
-  Query,
-  RewindFilesResult,
-  SDKMessage,
-  SDKUserMessage,
-  SlashCommand as SDKSlashCommand,
+import {
+  type CanUseTool,
+  type Options,
+  type PermissionMode as SDKPermissionMode,
+  type Query,
+  query as agentQuery,
+  type RewindFilesResult,
+  type SDKMessage,
+  type SDKUserMessage,
+  type SlashCommand as SDKSlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
-import { query as agentQuery } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'child_process';
 import { Notice } from 'obsidian';
 
@@ -79,7 +79,6 @@ import { type ClaudeProviderState, getClaudeState } from '../types/providerState
 import { createClaudeApprovalCallback } from './ClaudeApprovalHandler';
 import { applyClaudeDynamicUpdates } from './ClaudeDynamicUpdates';
 import { MessageChannel } from './ClaudeMessageChannel';
-import { createCustomSpawnFunction } from './customSpawn';
 import {
   type ColdStartQueryContext,
   type PersistentQueryContext,
@@ -92,6 +91,7 @@ import {
   buildClaudePromptWithImages,
   buildClaudeSDKUserMessage,
 } from './ClaudeUserMessageFactory';
+import { createCustomSpawnFunction } from './customSpawn';
 import {
   type ClosePersistentQueryOptions,
   createResponseHandler,
@@ -372,9 +372,7 @@ export class ClaudianService implements ChatRuntime {
           supportsAllowDangerouslySkipPermissions = /--allow-dangerously-skip-permissions\b/i.test(output);
           supportsIncludePartialMessages = /--include-partial-messages\b/i.test(output);
         } catch {
-          supportsSettingSources = false;
-          supportsAllowDangerouslySkipPermissions = false;
-          supportsIncludePartialMessages = false;
+          // Keep defaults (false) on probe failure.
         }
 
         this.cliFlagSupportCache = {
