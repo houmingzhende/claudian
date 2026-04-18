@@ -191,8 +191,15 @@ export class ClaudianService implements ChatRuntime {
   // When detected, disable the flag and retry automatically.
   private disableSettingSourcesFlag = false;
 
-  private settingSourcesSupportCache: { key: string; supported: boolean } | null = null;
-  private settingSourcesProbeInFlight: Promise<boolean> | null = null;
+  // Compatibility: some older Claude CLI builds do not support --allow-dangerously-skip-permissions.
+  private disableAllowDangerouslySkipPermissionsFlag = false;
+
+  private cliFlagSupportCache: {
+    key: string;
+    supportsSettingSources: boolean;
+    supportsAllowDangerouslySkipPermissions: boolean;
+  } | null = null;
+  private cliHelpProbeInFlight: Promise<void> | null = null;
 
   private getLegacyPluginDeps(): ClaudianPlugin & {
     agentManager?: Pick<AppAgentManager, 'setBuiltinAgentNames'>;
@@ -278,6 +285,11 @@ export class ClaudianService implements ChatRuntime {
       // (Older CLI errors with: unknown option '--setting-sources=...')
       delete (options as any).settingSources;
     }
+
+    if (this.disableAllowDangerouslySkipPermissionsFlag) {
+      // Remove the SDK option so it doesn't serialize to --allow-dangerously-skip-permissions.
+      delete (options as any).allowDangerouslySkipPermissions;
+    }
   }
 
   private isUnsupportedSettingSourcesError(error: unknown, capturedStderr: string): boolean {
@@ -287,23 +299,26 @@ export class ClaudianService implements ChatRuntime {
     return /--setting-sources/i.test(stderr) || /--setting-sources/i.test(msg);
   }
 
-  private async ensureSettingSourcesCompatibility(cliPath: string, enhancedPath: string): Promise<void> {
+  private async ensureCliFlagCompatibility(cliPath: string, enhancedPath: string): Promise<void> {
     // Unit tests run under Jest and should not spawn real binaries.
     if (process.env.JEST_WORKER_ID) {
       this.disableSettingSourcesFlag = false;
+      this.disableAllowDangerouslySkipPermissionsFlag = false;
       return;
     }
 
     const key = `${cliPath}|${enhancedPath}`;
-    if (this.settingSourcesSupportCache?.key === key) {
-      this.disableSettingSourcesFlag = !this.settingSourcesSupportCache.supported;
+    if (this.cliFlagSupportCache?.key === key) {
+      this.disableSettingSourcesFlag = !this.cliFlagSupportCache.supportsSettingSources;
+      this.disableAllowDangerouslySkipPermissionsFlag = !this.cliFlagSupportCache.supportsAllowDangerouslySkipPermissions;
       return;
     }
 
-    if (!this.settingSourcesProbeInFlight) {
-      this.settingSourcesProbeInFlight = (async () => {
+    if (!this.cliHelpProbeInFlight) {
+      this.cliHelpProbeInFlight = (async () => {
         // Default to "unsupported" if probe fails to avoid hard-crashing on unknown flags.
-        let supported = false;
+        let supportsSettingSources = false;
+        let supportsAllowDangerouslySkipPermissions = false;
         try {
           const child = spawn(cliPath, ['--help'], {
             env: {
@@ -341,20 +356,26 @@ export class ClaudianService implements ChatRuntime {
             });
           });
 
-          supported = /--setting-sources\b/i.test(output);
+          supportsSettingSources = /--setting-sources\b/i.test(output);
+          supportsAllowDangerouslySkipPermissions = /--allow-dangerously-skip-permissions\b/i.test(output);
         } catch {
-          supported = false;
+          supportsSettingSources = false;
+          supportsAllowDangerouslySkipPermissions = false;
         }
 
-        this.settingSourcesSupportCache = { key, supported };
-        this.disableSettingSourcesFlag = !supported;
-        return supported;
+        this.cliFlagSupportCache = {
+          key,
+          supportsSettingSources,
+          supportsAllowDangerouslySkipPermissions,
+        };
+        this.disableSettingSourcesFlag = !supportsSettingSources;
+        this.disableAllowDangerouslySkipPermissionsFlag = !supportsAllowDangerouslySkipPermissions;
       })().finally(() => {
-        this.settingSourcesProbeInFlight = null;
+        this.cliHelpProbeInFlight = null;
       });
     }
 
-    await this.settingSourcesProbeInFlight;
+    await this.cliHelpProbeInFlight;
   }
 
   private appendClaudeCliStderr(data: string): void {
@@ -865,7 +886,7 @@ export class ClaudianService implements ChatRuntime {
     externalContextPaths?: string[]
   ): Promise<Options> {
     const baseContext = this.buildQueryOptionsContext(vaultPath, cliPath);
-    await this.ensureSettingSourcesCompatibility(cliPath, baseContext.enhancedPath);
+    await this.ensureCliFlagCompatibility(cliPath, baseContext.enhancedPath);
     const hooks = this.buildHooks();
 
     const ctx: PersistentQueryContext = {
@@ -948,6 +969,10 @@ export class ClaudianService implements ChatRuntime {
             // Auto-downgrade for older Claude CLI that doesn't support --setting-sources.
             if (!this.disableSettingSourcesFlag && this.isUnsupportedSettingSourcesError(errorInstance, this.claudeCliStderr)) {
               this.disableSettingSourcesFlag = true;
+            }
+            // Auto-downgrade for older Claude CLI that doesn't support --allow-dangerously-skip-permissions.
+            if (!this.disableAllowDangerouslySkipPermissionsFlag && /--allow-dangerously-skip-permissions/i.test(this.claudeCliStderr)) {
+              this.disableAllowDangerouslySkipPermissionsFlag = true;
             }
             await this.ensureReady({ force: true, preserveHandlers: true });
             if (!this.messageChannel) {
@@ -1714,7 +1739,7 @@ export class ClaudianService implements ChatRuntime {
 
     const queryPrompt = this.buildPromptWithImages(prompt, images);
     const baseContext = this.buildQueryOptionsContext(cwd, cliPath);
-    await this.ensureSettingSourcesCompatibility(cliPath, baseContext.enhancedPath);
+    await this.ensureCliFlagCompatibility(cliPath, baseContext.enhancedPath);
     const externalContextPaths = queryOptions?.externalContextPaths || [];
     const hooks = this.buildHooks();
     const hasEditorContext = prompt.includes('<editor_selection');
@@ -1823,13 +1848,22 @@ export class ClaudianService implements ChatRuntime {
           capturedStderr: this.claudeCliStderr,
         });
 
-        // Auto-downgrade for older Claude CLI that doesn't support --setting-sources.
+        // Auto-downgrade for older Claude CLI flags.
         // Use the formatted message for detection to avoid timing issues where
         // stderr arrives slightly after process exit.
-        if (!this.disableSettingSourcesFlag && !sawAnyMessage && /--setting-sources/i.test(formatted)) {
-          this.disableSettingSourcesFlag = true;
-          this.clearClaudeCliDiagnostics();
-          continue;
+        if (!sawAnyMessage) {
+          const mentionsSettingSources = /--setting-sources/i.test(formatted);
+          const mentionsSkipPermissions = /--allow-dangerously-skip-permissions/i.test(formatted);
+          if (mentionsSettingSources && !this.disableSettingSourcesFlag) {
+            this.disableSettingSourcesFlag = true;
+            this.clearClaudeCliDiagnostics();
+            continue;
+          }
+          if (mentionsSkipPermissions && !this.disableAllowDangerouslySkipPermissionsFlag) {
+            this.disableAllowDangerouslySkipPermissionsFlag = true;
+            this.clearClaudeCliDiagnostics();
+            continue;
+          }
         }
 
         yield { type: 'error', content: formatted };
