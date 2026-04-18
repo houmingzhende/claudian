@@ -61,6 +61,14 @@ describe('ProviderRegistry', () => {
     expect(runtime.providerId).toBe('codex');
   });
 
+  it('creates a Coco runtime', () => {
+    const runtime = ProviderRegistry.createChatRuntime({
+      providerId: 'coco',
+      plugin: { settings: { providerConfigs: { coco: { enabled: true } } } } as any,
+    });
+    expect(runtime.providerId).toBe('coco');
+  });
+
   it('returns Codex capabilities', () => {
     const caps = ProviderRegistry.getCapabilities('codex');
     expect(caps.providerId).toBe('codex');
@@ -75,6 +83,7 @@ describe('ProviderRegistry', () => {
     const ids = ProviderRegistry.getRegisteredProviderIds();
     expect(ids).toContain('claude');
     expect(ids).toContain('codex');
+    expect(ids).toContain('coco');
   });
 
   it('filters enabled provider ids using registration metadata', () => {
@@ -88,10 +97,25 @@ describe('ProviderRegistry', () => {
         codex: { enabled: true },
       },
     })).toEqual(['codex', 'claude']);
+
+    expect(ProviderRegistry.getEnabledProviderIds({
+      providerConfigs: {
+        codex: { enabled: false },
+        coco: { enabled: false },
+      },
+    })).toEqual(['claude']);
+
+    expect(ProviderRegistry.getEnabledProviderIds({
+      providerConfigs: {
+        codex: { enabled: false },
+        coco: { enabled: true },
+      },
+    })).toEqual(['claude', 'coco']);
   });
 
   it('returns the display name from provider registration metadata', () => {
     expect(ProviderRegistry.getProviderDisplayName('claude')).toBe('Claude');
     expect(ProviderRegistry.getProviderDisplayName('codex')).toBe('Codex');
+    expect(ProviderRegistry.getProviderDisplayName('coco')).toBe('Coco');
   });
 });
