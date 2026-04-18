@@ -78,6 +78,7 @@ import { type ClaudeProviderState, getClaudeState } from '../types/providerState
 import { createClaudeApprovalCallback } from './ClaudeApprovalHandler';
 import { applyClaudeDynamicUpdates } from './ClaudeDynamicUpdates';
 import { MessageChannel } from './ClaudeMessageChannel';
+import { createCustomSpawnFunction } from './customSpawn';
 import {
   type ColdStartQueryContext,
   type PersistentQueryContext,
@@ -785,6 +786,11 @@ export class ClaudianService implements ChatRuntime {
     };
 
     const options = QueryOptionsBuilder.buildPersistentQueryOptions(ctx);
+    // Always capture stderr directly from the spawned process so failures are
+    // actionable even when the SDK doesn't surface stderr on the thrown error.
+    options.spawnClaudeCodeProcess = createCustomSpawnFunction(baseContext.enhancedPath, (data) => {
+      this.appendClaudeCliStderr(data);
+    });
     this.attachClaudeCliDiagnostics(options);
     return options;
   }
@@ -1634,6 +1640,11 @@ export class ClaudianService implements ChatRuntime {
     };
 
     const options = QueryOptionsBuilder.buildColdStartQueryOptions(ctx);
+    // Always capture stderr directly from the spawned process so failures are
+    // actionable even when the SDK doesn't surface stderr on the thrown error.
+    options.spawnClaudeCodeProcess = createCustomSpawnFunction(baseContext.enhancedPath, (data) => {
+      this.appendClaudeCliStderr(data);
+    });
     this.attachClaudeCliDiagnostics(options);
 
     let sawStreamText = false;

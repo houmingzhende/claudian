@@ -77,6 +77,30 @@ describe('createCustomSpawnFunction', () => {
     expect(mockProcess.stderr?.on).toHaveBeenCalledWith('data', expect.any(Function));
   });
 
+  it('forwards stderr chunks to provided sink', () => {
+    const mockProcess = createMockProcess();
+    spawnMock.mockReturnValue(mockProcess as unknown as ReturnType<typeof spawn>);
+
+    const onStderr = jest.fn();
+    const spawnFn = createCustomSpawnFunction('/enhanced/path', onStderr);
+    const signal = new AbortController().signal;
+    spawnFn({
+      command: 'node',
+      args: ['cli.js'],
+      cwd: '/tmp',
+      env: {},
+      signal,
+    });
+
+    const handler = (mockProcess.stderr as any).on.mock.calls
+      .find((call: any[]) => call[0] === 'data')?.[1] as ((chunk: unknown) => void) | undefined;
+    expect(typeof handler).toBe('function');
+
+    handler?.(Buffer.from('boom'));
+    expect(onStderr).toHaveBeenCalled();
+    expect(String(onStderr.mock.calls[0][0])).toContain('boom');
+  });
+
   it('throws when process streams are missing', () => {
     const mockProcess = {
       stdin: null,
