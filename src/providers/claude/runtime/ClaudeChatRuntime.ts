@@ -965,6 +965,27 @@ export class ClaudianService implements ChatRuntime {
           if (this.shuttingDown) break;
           await this.routeMessage(message);
         }
+
+        // If the query stream ends without an error and we are not intentionally
+        // shutting down, treat this as an unexpected termination.
+        // Without this, active turns may hang forever waiting for onDone/onError.
+        if (!this.shuttingDown && !this.coldStartInProgress) {
+          // Skip handling if this consumer was replaced by a new one.
+          if (this.persistentQuery === queryForThisConsumer || this.persistentQuery === null) {
+            const handler = this.responseHandlers[this.responseHandlers.length - 1];
+            const err = new Error('Claude Code persistent query ended unexpectedly.');
+            try {
+              handler?.onError(err);
+            } catch {
+              // ignore handler errors
+            }
+
+            // Restart persistent query in background so the next user message can proceed.
+            void this.ensureReady({ force: true }).catch(() => {
+              // ignore restart errors; next query will fallback to cold-start
+            });
+          }
+        }
       } catch (error) {
         // Skip error handling if this consumer was replaced by a new one.
         // This prevents race conditions where the OLD consumer's error handler
