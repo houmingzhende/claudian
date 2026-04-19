@@ -669,12 +669,15 @@ export class ClaudianService implements ChatRuntime {
       options,
     });
 
+    console.log('[Claudian] Persistent query started');
+
     if (this.pendingResumeAt === resumeAtMessageId) {
       this.pendingResumeAt = undefined;
     }
     this.attachPersistentQueryStdinErrorHandler(this.persistentQuery);
 
     this.startResponseConsumer();
+    console.log('[Claudian] Response consumer started');
     this.notifyReadyStateChange();
   }
 
@@ -960,7 +963,6 @@ export class ClaudianService implements ChatRuntime {
       try {
         for await (const message of this.persistentQuery) {
           if (this.shuttingDown) break;
-
           await this.routeMessage(message);
         }
       } catch (error) {
@@ -1527,6 +1529,11 @@ export class ClaudianService implements ChatRuntime {
 
     if (!this.persistentQuery || !this.messageChannel) {
       // Fallback to cold-start if persistent query not available
+      yield* this.queryViaSDK(prompt, vaultPath, cliPath, images, queryOptions);
+      return;
+    }
+
+    if (!this.responseConsumerRunning) {
       yield* this.queryViaSDK(prompt, vaultPath, cliPath, images, queryOptions);
       return;
     }

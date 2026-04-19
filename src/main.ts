@@ -45,8 +45,11 @@ export default class ClaudianPlugin extends Plugin {
   private lastKnownTabManagerState: AppTabManagerState | null = null;
 
   async onload() {
+    console.log('[Claudian] Plugin loading...');
     await this.loadSettings();
+    console.log('[Claudian] Settings loaded');
     await ProviderWorkspaceRegistry.initializeAll(this);
+    console.log('[Claudian] Providers initialized');
 
     this.registerView(
       VIEW_TYPE_CLAUDIAN,

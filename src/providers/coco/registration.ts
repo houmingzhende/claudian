@@ -24,7 +24,7 @@ export const cocoProviderRegistration: ProviderRegistration = {
   blankTabOrder: 30,
   isEnabled: (settings) => getCocoProviderSettings(settings).enabled,
   capabilities: COCO_PROVIDER_CAPABILITIES,
-  environmentKeyPatterns: [/^COCO_/i, /^TRAECLI_/i],
+  environmentKeyPatterns: [/^COCO_/i, /^TRAECLI_/i, /^ANTHROPIC_/i, /^CLAUDE_/i],
   chatUIConfig: cocoChatUIConfig,
   settingsReconciler: cocoSettingsReconciler,
   createRuntime: ({ plugin }) => new CocoChatRuntime(plugin),
