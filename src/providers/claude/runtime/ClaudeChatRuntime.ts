@@ -152,6 +152,9 @@ export class ClaudianService implements ChatRuntime {
   private responseConsumerPromise: Promise<void> | null = null;
   private shuttingDown = false;
 
+  // Active persistent turn (used to break deadlocks on cancel/watchdog)
+  private activePersistentHandler: ResponseHandler | null = null;
+
   // Tracked configuration for detecting changes that require restart
   private currentConfig: PersistentQueryConfig | null = null;
 
@@ -1630,6 +1633,30 @@ export class ClaudianService implements ChatRuntime {
     });
 
     this.registerResponseHandler(handler);
+    this.activePersistentHandler = handler;
+
+    // If the CLI hangs (no chunks, no error, no stream end), this generator can deadlock
+    // waiting for state.resolveChunk. Add a watchdog to fail-fast and restart persistent mode.
+    const firstChunkTimeoutMs = 120_000;
+    let watchdog: NodeJS.Timeout | null = setTimeout(() => {
+      if (state.done) return;
+      if (handler.sawAnyChunk) return;
+      try {
+        handler.onError(new Error('Claude Code produced no output for this turn (possible CLI hang).'));
+      } catch {
+        // ignore
+      }
+
+      // Close and restart in background so the next user message can proceed.
+      try {
+        this.closePersistentQuery('watchdog: no output', { preserveHandlers: true });
+      } catch {
+        // ignore
+      }
+      void this.ensureReady({ force: true, preserveHandlers: true }).catch(() => {
+        // ignore
+      });
+    }, firstChunkTimeoutMs);
 
     try {
       // Track message for crash recovery (Phase 1.3)
@@ -1694,6 +1721,13 @@ export class ClaudianService implements ChatRuntime {
 
       yield { type: 'done' };
     } finally {
+      if (watchdog) {
+        clearTimeout(watchdog);
+        watchdog = null;
+      }
+      if (this.activePersistentHandler?.id === handlerId) {
+        this.activePersistentHandler = null;
+      }
       this.unregisterResponseHandler(handlerId);
       this.currentAllowedTools = null;
     }
@@ -1941,6 +1975,17 @@ export class ClaudianService implements ChatRuntime {
       void this.persistentQuery.interrupt().catch(() => {
         // Silence abort/interrupt errors
       });
+    }
+
+    // Ensure any in-flight persistent turn unblocks immediately.
+    // (interrupt() may not resolve the awaiting promise inside queryViaPersistent)
+    if (this.activePersistentHandler) {
+      try {
+        this.activePersistentHandler.onError(new Error('Cancelled'));
+      } catch {
+        // ignore
+      }
+      this.activePersistentHandler = null;
     }
   }
 
