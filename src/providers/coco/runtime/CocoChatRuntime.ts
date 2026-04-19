@@ -233,11 +233,13 @@ function spawnCocoAcpServer(
   cliPath: string,
   options: {
     env: Record<string, string | undefined>;
+    cwd: string;
   },
 ): ChildProcessWithoutNullStreams {
   const args: string[] = ['acp', 'serve'];
   return spawn(cliPath, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: options.cwd,
     env: {
       ...process.env,
       ...options.env,
@@ -373,9 +375,13 @@ export class CocoChatRuntime implements ChatRuntime {
       return false;
     }
 
+    // Vault path is required for coco to access files
+    const vaultPath = getVaultPath(this.plugin.app) ?? process.cwd();
+
     const nextConfigKey = JSON.stringify({
       cliPath,
       env: envVars,
+      cwd: vaultPath,
     });
 
     const needsRestart = !this.acpProc
@@ -391,7 +397,7 @@ export class CocoChatRuntime implements ChatRuntime {
         this.sessionInvalidated = true;
       }
 
-      const proc = spawnCocoAcpServer(cliPath, { env: envVars });
+      const proc = spawnCocoAcpServer(cliPath, { env: envVars, cwd: vaultPath });
       this.acpProc = proc;
       this.clientConfigKey = nextConfigKey;
       const transport = new JsonRpcTransport(proc);
